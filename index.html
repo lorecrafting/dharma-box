@@ -192,6 +192,8 @@
     .toc-item.active .toc-num { color: var(--gold); }
 
     .toc-label {
+      flex: 1;
+      min-width: 0;
       font-size: 13px;
       color: rgba(237,224,200,0.65);
       white-space: nowrap;
@@ -261,6 +263,69 @@
       margin-top: 12px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Custom video controls ───────────────────────────── */
+    #ctrl-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+    }
+    #ctrl-tap {
+      flex: 1;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #ctrl-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px 10px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.72));
+      flex-shrink: 0;
+      transition: opacity 0.35s;
+    }
+    #ctrl-overlay.ctrl-hidden #ctrl-bar { opacity: 0; pointer-events: none; }
+    .ctrl-btn {
+      background: none; border: none;
+      padding: 6px; cursor: pointer;
+      flex-shrink: 0; display: flex;
+      align-items: center; justify-content: center;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .ctrl-btn svg { width: 26px; height: 26px; fill: rgba(255,255,255,0.92); }
+    #ctrl-prog-wrap {
+      flex: 1; padding: 12px 0;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #ctrl-prog {
+      height: 3px;
+      background: rgba(255,255,255,0.28);
+      border-radius: 2px;
+    }
+    #ctrl-prog-fill {
+      height: 100%;
+      background: var(--gold);
+      border-radius: 2px;
+      width: 0%;
+    }
+    #ctrl-time {
+      font-size: 11px;
+      color: rgba(255,255,255,0.78);
+      white-space: nowrap;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+    /* ── TOC duration ────────────────────────────────────── */
+    .toc-dur {
+      font-size: 11px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+      padding-left: 6px;
+    }
   </style>
 </head>
 <body>
@@ -279,13 +344,29 @@
   <!-- Video player -->
   <div id="player-wrap">
     <div id="youtube-player"></div>
+    <!-- Custom controls overlay (replaces native controls so share/more-videos buttons are gone) -->
+    <div id="ctrl-overlay">
+      <div id="ctrl-tap"></div>
+      <div id="ctrl-bar">
+        <button class="ctrl-btn" id="ctrl-pp" aria-label="播放/暫停">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <div id="ctrl-prog-wrap">
+          <div id="ctrl-prog"><div id="ctrl-prog-fill"></div></div>
+        </div>
+        <span id="ctrl-time">0:00</span>
+        <button class="ctrl-btn" id="ctrl-fs" aria-label="全螢幕">
+          <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+        </button>
+      </div>
+    </div>
   </div>
 
   <!-- Bottom bar -->
   <div id="bottom">
     <button id="btn-menu">
       <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
-      目錄
+      <span id="btn-lecture">目錄</span>
     </button>
   </div>
 
@@ -347,11 +428,11 @@ function onYouTubeIframeAPIReady() {
     height: '100%',
     width: '100%',
     videoId: PLAYLIST[currentIdx].id,
+    host: 'https://www.youtube-nocookie.com',
     playerVars: {
       autoplay: 1,
-      controls: 1,
-      iv_load_policy: 3,  // no annotations
-      modestbranding: 1,
+      controls: 0,
+      iv_load_policy: 3,
       rel: 0,
       playsinline: 1,
     },
@@ -368,27 +449,36 @@ function onPlayerReady(event) {
   updateUI();
   hideLoading();
   event.target.playVideo();
+  setPlayIcon(true);
+  showCtrl();
 }
 
 function onPlayerStateChange(event) {
   if (event.data === YT.PlayerState.PLAYING) {
     advancing = false;
     startTimeWatch();
+    setPlayIcon(true);
+    showCtrl();
   } else if (event.data === YT.PlayerState.ENDED) {
     stopTimeWatch();
     goNext();
   } else {
     stopTimeWatch();
+    if (event.data === YT.PlayerState.PAUSED) {
+      setPlayIcon(false);
+      showCtrl();
+    }
   }
 }
 
-// Advance ~1.5 s before end so the "more videos" end-screen never shows.
 function startTimeWatch() {
   clearInterval(timeWatchTimer);
   timeWatchTimer = setInterval(() => {
     if (!player || !playerReady) return;
+    updateCtrlProgress();
     const dur = player.getDuration();
     const cur = player.getCurrentTime();
+    // Advance ~1.5 s before end to avoid frozen end-frame
     if (dur > 30 && cur > 0 && dur - cur < 1.5) {
       stopTimeWatch();
       goNext();
@@ -414,6 +504,9 @@ function goTo(idx) {
   saveIdx(currentIdx);
   updateUI();
   if (player && playerReady) player.loadVideoById(PLAYLIST[currentIdx].id);
+  document.getElementById('ctrl-prog-fill').style.width = '0%';
+  document.getElementById('ctrl-time').textContent = '0:00';
+  setPlayIcon(true);
 }
 
 function goPrev() {
@@ -431,6 +524,8 @@ function goNext() {
 // ── UI Updates ────────────────────────────────────────────
 function updateUI() {
   document.title = `第 ${currentIdx + 1} 講 · 法寶匣`;
+  const lbl = document.getElementById('btn-lecture');
+  if (lbl) lbl.textContent = `第 ${currentIdx + 1} 講`;
 }
 
 function hideLoading() {
@@ -474,7 +569,8 @@ document.getElementById('btn-next').addEventListener('click', () => { closeDrawe
     btn.className = 'toc-item' + (i === currentIdx ? ' active' : '');
     btn.innerHTML =
       `<span class="toc-num">${i + 1}</span>` +
-      `<span class="toc-label">${item.title}</span>`;
+      `<span class="toc-label">${item.title}</span>` +
+      `<span class="toc-dur">${item.duration}</span>`;
     btn.addEventListener('click', () => { goTo(i); closeDrawer(); });
     frag.appendChild(btn);
   });
@@ -494,6 +590,104 @@ function showToast(msg) {
 // ── Prevent context menu / long-press menu ────────────────
 document.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('selectstart', e => e.preventDefault());
+
+// ── Custom controls ───────────────────────────────────────
+let ctrlHideTimer = null;
+
+function fmtTime(s) {
+  s = Math.floor(s || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+    : `${m}:${String(sec).padStart(2,'0')}`;
+}
+
+function setPlayIcon(playing) {
+  const path = document.querySelector('#ctrl-pp svg path');
+  if (path) path.setAttribute('d',
+    playing ? 'M6 19h4V5H6v14zm8-14v14h4V5h-4z' : 'M8 5v14l11-7z'
+  );
+}
+
+function updateCtrlProgress() {
+  if (!player || !playerReady) return;
+  try {
+    const dur = player.getDuration();
+    const cur = player.getCurrentTime();
+    if (dur > 0) {
+      document.getElementById('ctrl-prog-fill').style.width = (cur / dur * 100).toFixed(2) + '%';
+      document.getElementById('ctrl-time').textContent = fmtTime(cur) + ' / ' + fmtTime(dur);
+    }
+  } catch(_) {}
+}
+
+function showCtrl() {
+  const overlay = document.getElementById('ctrl-overlay');
+  overlay.classList.remove('ctrl-hidden');
+  clearTimeout(ctrlHideTimer);
+  ctrlHideTimer = setTimeout(() => {
+    if (player && playerReady && player.getPlayerState() === YT.PlayerState.PLAYING) {
+      overlay.classList.add('ctrl-hidden');
+    }
+  }, 4000);
+}
+
+document.getElementById('ctrl-tap').addEventListener('click', () => {
+  const overlay = document.getElementById('ctrl-overlay');
+  if (overlay.classList.contains('ctrl-hidden')) { showCtrl(); return; }
+  if (!player || !playerReady) return;
+  const state = player.getPlayerState();
+  if (state === YT.PlayerState.PLAYING) player.pauseVideo();
+  else player.playVideo();
+  showCtrl();
+});
+
+document.getElementById('ctrl-pp').addEventListener('click', e => {
+  e.stopPropagation();
+  if (!player || !playerReady) return;
+  const state = player.getPlayerState();
+  if (state === YT.PlayerState.PLAYING) player.pauseVideo();
+  else player.playVideo();
+  showCtrl();
+});
+
+document.getElementById('ctrl-prog-wrap').addEventListener('click', e => {
+  e.stopPropagation();
+  if (!player || !playerReady) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  player.seekTo(pct * player.getDuration(), true);
+  updateCtrlProgress();
+  showCtrl();
+});
+
+document.getElementById('ctrl-prog-wrap').addEventListener('touchstart', e => {
+  e.stopPropagation();
+  if (!player || !playerReady) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const pct  = Math.max(0, Math.min(1, (e.touches[0].clientX - rect.left) / rect.width));
+  player.seekTo(pct * player.getDuration(), true);
+  updateCtrlProgress();
+  showCtrl();
+}, { passive: true });
+
+document.getElementById('ctrl-fs').addEventListener('click', e => {
+  e.stopPropagation();
+  if (document.fullscreenElement) document.exitFullscreen?.();
+  else document.getElementById('player-wrap').requestFullscreen?.();
+  showCtrl();
+});
+
+document.addEventListener('fullscreenchange', () => {
+  const path = document.querySelector('#ctrl-fs svg path');
+  if (path) path.setAttribute('d',
+    document.fullscreenElement
+      ? 'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z'
+      : 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z'
+  );
+});
 
 // ── Load YouTube IFrame API ───────────────────────────────
 const tag = document.createElement('script');
